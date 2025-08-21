@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <title>二項分布 × 高爾頓板互動模擬器</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root{
+      --card:#ffffff; --border:#dcdcdc; --ink:#222; --muted:#6b7280; --bg:#f5f7fb;
+      --accent:#2563eb; --accent-2:#10b981; --peg:#4b5563; --bin:#cbd5e1; --ball:#ef4444;
+    }
+    *{box-sizing:border-box}
+    body{margin:20px;font-family:"Microsoft JhengHei",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink);background:var(--bg)}
+    h1{margin:0 0 12px;text-align:center}
+    .grid{display:grid;grid-template-columns:320px 1fr;gap:18px;align-items:start}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px}
+    .muted{color:var(--muted);font-size:12px}
+    .controls h3{margin:0 0 6px}
+    .row{margin:12px 0}
+    .label{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+    input[type="range"]{width:100%}
+    .btns{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
+    button{border:0;border-radius:22px;padding:9px 14px;cursor:pointer}
+    .primary{background:var(--accent);color:white}
+    .success{background:var(--accent-2);color:white}
+    .danger{background:#ef4444;color:white}
+    .ghost{background:#e5e7eb;color:#111827}
+    #simWrap{display:grid;grid-template-columns:1fr;gap:16px}
+    #boardWrap{width:520px;margin:auto}
+    #boardWrap h3{margin:0 0 8px}
+    #board{position:relative;width:520px;height:520px;background:#f8fafc;border:1px solid var(--border);border-radius:12px;margin:auto;overflow:hidden}
+    .peg{position:absolute;width:7px;height:7px;border-radius:50%;background:var(--peg);opacity:.85;transform:translate(-50%,-50%)}
+    .bin{position:absolute;bottom:30px;width:calc(var(--w)*1px);height:70px;border:2px solid var(--bin);border-radius:6px;background:#f1f5f9;transform:translateX(-50%)}
+    .bin-label{position:absolute;bottom:6px;transform:translateX(-50%);font-size:12px;color:var(--muted)}
+    .ball{position:absolute;width:11px;height:11px;border-radius:50%;background:var(--ball);box-shadow:0 0 0 1px rgba(0,0,0,.06);transform:translate(-50%,-50%)}
+    #chartWrap{width:520px;margin:0 auto}
+    #chart{background:white;border:1px solid var(--border);border-radius:12px;padding:8px}
+    .stats{margin-top:10px;line-height:1.6}
+    @media (max-width: 1024px){ .grid{grid-template-columns:1fr} #boardWrap,#chartWrap{width:92vw} #board{width:92vw;height:92vw;max-width:520px;max-height:520px} }
+  </style>
+</head>
+<body>
+  <h1>二項分布 × 高爾頓板互動模擬器</h1>
+
+  <div class="grid">
+    <!-- 左：控制面板 -->
+    <div class="card controls">
+      <h3>控制面板</h3>
+
+      <div class="row">
+        <div class="label"><span>階層數 n</span><b id="nVal">10</b></div>
+        <input type="range" id="n" min="5" max="20" value="10">
+        <div class="muted">※ 更改 n 會重置統計（桶數改變）。</div>
+      </div>
+
+      <div class="row">
+        <div class="label"><span>向右機率 p</span><b id="pVal">0.50</b></div>
+        <input type="range" id="p" min="0" max="1" step="0.01" value="0.50">
+      </div>
+
+      <div class="row">
+        <div class="label"><span>每批丟幾顆</span><b id="batchVal">30</b></div>
+        <input type="range" id="batch" min="1" max="200" step="1" value="30">
+      </div>
+
+      <div class="row">
+        <div class="label"><span>出球速度（顆/秒）</span><b id="emitVal">180</b></div>
+        <input type="range" id="emit" min="10" max="400" step="10" value="180">
+      </div>
+
+      <div class="row">
+        <div class="label"><span>下落速度（毫秒/層）</span><b id="fallVal">160</b></div>
+        <input type="range" id="fall" min="60" max="400" step="10" value="160">
+      </div>
+
+      <div class="btns">
+        <button id="batchBtn" class="success">丟一批</button>
+        <button id="autoBtn" class="primary">自動開始</button>
+        <button id="pauseBtn" class="ghost">暫停</button>
+        <button id="resetBtn" class="ghost">重置</button>
+      </div>
+
+      <div class="stats" id="stats" aria-live="polite"></div>
+      <div class="muted">球會穿過每層釘子並依 p 隨機向右（否則向左），最終落在第 k 桶（k=0..n）。</div>
+    </div>
+
+    <!-- 右：高爾頓板 + 圖表（與板等寬） -->
+    <div id="simWrap">
+      <div id="boardWrap" class="card">
+        <h3 id="boardTitle">高爾頓板（n = 10, p = 0.50）</h3>
+        <div id="board" role="img" aria-label="高爾頓板模擬畫布"></div>
+      </div>
+      <div id="chartWrap" class="card">
+        <h3>直方圖（觀察值 vs. 理論值）</h3>
+        <canvas id="chart" width="520" height="220"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ====== 參數狀態 ======
+    let n = 10;                // 階層
+    let p = 0.50;              // 向右機率
+    let batchSize = 30;        // 每批顆數
+    let emitPerSec = 180;      // 出球速度（顆/秒）
+    let fallMsPerLevel = 160;  // 每層下落毫秒
+    let paused  = false;
+    let autoOn  = false;
+
+    const board   = document.getElementById('board');
+    const titleEl = document.getElementById('boardTitle');
+    const statsEl = document.getElementById('stats');
+
+    // ====== DOM 控制 ======
+    const nRange    = document.getElementById('n');
+    const pRange    = document.getElementById('p');
+    const batchRange= document.getElementById('batch');
+    const emitRange = document.getElementById('emit');
+    const fallRange = document.getElementById('fall');
+
+    const nVal = document.getElementById('nVal');
+    const pVal = document.getElementById('pVal');
+    const batchVal = document.getElementById('batchVal');
+    const emitVal = document.getElementById('emitVal');
+    const fallVal = document.getElementById('fallVal');
+
+    const batchBtn = document.getElementById('batchBtn');
+    const autoBtn  = document.getElementById('autoBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const resetBtn = document.getElementById('resetBtn');
+
+    // 即時顯示數值
+    nRange.oninput     = e => { nVal.textContent = e.target.value; prepareBoard(parseInt(e.target.value)); resetCounts(); };
+    pRange.oninput     = e => { p = parseFloat(e.target.value);    pVal.textContent = p.toFixed(2); titleEl.textContent = `高爾頓板（n = ${n}, p = ${p.toFixed(2)}）`; };
+    batchRange.oninput = e => { batchSize = parseInt(e.target.value); batchVal.textContent = batchSize; };
+    emitRange.oninput  = e => { emitPerSec = parseInt(e.target.value); emitVal.textContent = emitPerSec; restartEmitterIfAuto(); };
+    fallRange.oninput  = e => { fallMsPerLevel = parseInt(e.target.value); fallVal.textContent = fallMsPerLevel; };
+
+    // 按鈕
+    batchBtn.onclick = () => emitBatch(batchSize);
+    autoBtn.onclick  = () => toggleAuto();
+    pauseBtn.onclick = () => togglePause();
+    resetBtn.onclick = () => resetAll();
+
+    // ====== 幾何佈局 ======
+    let spacingX = 0, spacingY = 0, binW = 0;
+    let binLeftXs = []; // 每桶中心 x
+    function prepareBoard(levels = n){
+      n = levels;
+      titleEl.textContent = `高爾頓板（n = ${n}, p = ${p.toFixed(2)}）`;
+
+      board.innerHTML = '';
+      const W = board.clientWidth, H = board.clientHeight;
+      spacingX = W / (n + 1);
+      spacingY = H / (n + 2);
+      binW     = W / (n + 1);
+
+      // 釘子
+      for(let r=0; r<n; r++){
+        for(let c=0; c<=r; c++){
+          const x = spacingX * (c + 1) + (n - r) * spacingX / 2;
+          const y = spacingY * (r + 1);
+          const peg = document.createElement('div');
+          peg.className = 'peg';
+          peg.style.left = `${x}px`;
+          peg.style.top  = `${y}px`;
+          board.appendChild(peg);
+        }
+      }
+
+      // 桶子 & 標籤
+      binLeftXs = [];
+      for(let k=0; k<=n; k++){
+        const x = (k + 0.5) * binW;
+        binLeftXs.push(x);
+        const bin = document.createElement('div');
+        bin.className = 'bin';
+        bin.style.left = `${x}px`;
+        bin.style.setProperty('--w', binW - 12);
+        board.appendChild(bin);
+
+        const lab = document.createElement('div');
+        lab.className = 'bin-label';
+        lab.style.left = `${x}px`;
+        lab.textContent = k;
+        board.appendChild(lab);
+      }
+    }
+
+    // ====== 統計 & 理論 ======
+    let bins = [];            // 實測計數（長度 n+1）
+    let landed = 0;           // 已落地球數
+
+    function resetCounts(){
+      bins = Array(n+1).fill(0);
+      landed = 0;
+      updateStats();
+      updateChart(true);
+    }
+    function updateStats(){
+      const mean = n * p;
+      const variance = n * p * (1 - p);
+      const std = Math.sqrt(variance);
+      statsEl.innerHTML =
+        `理論平均數 = <b>${mean.toFixed(2)}</b>，變異數 = <b>${variance.toFixed(2)}</b>，標準差 = <b>${std.toFixed(2)}</b><br>` +
+        `已落地球數 = <b>${landed}</b>`;
+    }
+    function comb(n,k){
+      if(k<0 || k>n) return 0;
+      if(k===0 || k===n) return 1;
+      k = Math.min(k, n-k);
+      let res = 1;
+      for(let i=1;i<=k;i++){
+        res *= (n - k + i) / i;
+      }
+      return res;
+    }
+    function theoCounts(){
+      const arr = [];
+      for(let k=0;k<=n;k++){
+        const pmf = comb(n,k) * Math.pow(p,k) * Math.pow(1-p, n-k);
+        arr.push(pmf * landed);
+      }
+      return arr;
+    }
+
+    // ====== 球系統 ======
+    let balls = [];          // 活動中的球
+    let lastTS = 0;
+    let batchTimer = null;   // 本次批量發射的計時器
+    let autoTimer = null;    // 自動發射的計時器
+
+    function spawnBall(){
+      const x0 = board.clientWidth / 2;
+      const y0 = spacingY * 0.3;
+      balls.push({
+        x:x0, y:y0, row:0, successes:0,
+        targetX:x0, vx:0,
+      });
+      if(balls.length > 1200){ balls.splice(0, balls.length-1200); }
+    }
+
+    function emitBatch(count){
+      // 每批依出球速度分散時間，不會一次爆 500 顆
+      clearInterval(batchTimer);
+      let left = count;
+      const iv = Math.max(8, Math.floor(1000/emitPerSec));
+      batchTimer = setInterval(()=>{
+        if(paused){ return; }
+        if(left<=0){ clearInterval(batchTimer); return; }
+        spawnBall(); left--;
+      }, iv);
+    }
+
+    function toggleAuto(){
+      autoOn = !autoOn;
+      if(autoOn){
+        autoBtn.textContent = '自動停止';
+        startAutoEmitter();
+      }else{
+        autoBtn.textContent = '自動開始';
+        stopAutoEmitter();
+      }
+    }
+    function startAutoEmitter(){
+      stopAutoEmitter();
+      const iv = Math.max(8, Math.floor(1000/emitPerSec));
+      autoTimer = setInterval(()=>{
+        if(!paused) spawnBall();
+      }, iv);
+    }
+    function stopAutoEmitter(){
+      if(autoTimer){ clearInterval(autoTimer); autoTimer = null; }
+    }
+    function restartEmitterIfAuto(){
+      if(autoOn){ startAutoEmitter(); }
+    }
+
+    function togglePause(){
+      paused = !paused;
+      pauseBtn.textContent = paused ? '繼續' : '暫停';
+    }
+
+    function stepBalls(dt){
+      const dyPerMs = spacingY / fallMsPerLevel;
+      const dy = dyPerMs * dt;
+
+      for(let i=balls.length-1;i>=0;i--){
+        const b = balls[i];
+        if(!paused){
+          b.y += dy;
+          const threshold = (b.row + 1) * spacingY;
+          if(b.row < n && b.y >= threshold){
+            if(Math.random() < p){ b.successes++; b.targetX += binW/2; }
+            else { b.targetX -= binW/2; }
+            b.row++;
+            b.vx = (b.targetX - b.x) * 0.12;
+          }
+          b.x += b.vx;
+          b.vx *= 0.85;
+        }
+        if(b.y >= board.clientHeight - 40){
+          balls.splice(i,1);
+          const k = Math.max(0, Math.min(n, b.successes));
+          bins[k]++; landed++;
+        }
+      }
+    }
+
+    function renderBalls(){
+      const old = board.querySelectorAll('.ball');
+      old.forEach(el => el.remove());
+      for(const b of balls){
+        const el = document.createElement('div');
+        el.className = 'ball';
+        el.style.left = `${b.x}px`;
+        el.style.top  = `${b.y}px`;
+        board.appendChild(el);
+      }
+    }
+
+    function loop(ts){
+      if(!lastTS) lastTS = ts;
+      const dt = ts - lastTS;
+      lastTS = ts;
+
+      stepBalls(dt);
+      if(landedChanged()){
+        updateChart(false);
+        updateStats();
+      }
+      renderBalls();
+      requestAnimationFrame(loop);
+    }
+    let _prevLanded = 0;
+    function landedChanged(){
+      if(landed !== _prevLanded){ _prevLanded = landed; return true; }
+      return false;
+    }
+
+    // ====== Chart.js（穩定不抖動）======
+    const ctx = document.getElementById('chart').getContext('2d');
+    const chart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: Array.from({length:n+1}, (_,i)=>i),
+        datasets: [
+          {
+            label: '觀察值（落地次數）',
+            data: Array(n+1).fill(0),
+            backgroundColor: 'rgba(16,185,129,0.75)'
+          },
+          {
+            label: '理論值（期望次數）',
+            data: Array(n+1).fill(0),
+            type: 'line',
+            borderColor: '#ef4444',
+            borderWidth: 2,
+            pointRadius: 0,
+            fill: false
+          }
+        ]
+      },
+      options: {
+        animation: false,
+        responsive: false, // 尺寸由 canvas 寬高控制（與板等寬）
+        scales: {
+          x: { title: { display:true, text:'成功次數 k' } },
+          y: { title: { display:true, text:'次數' }, beginAtZero: true }
+        }
+      }
+    });
+
+    function updateChart(reset=false){
+      if(reset){
+        chart.data.labels = Array.from({length:n+1}, (_,i)=>i);
+        chart.data.datasets[0].data = Array(n+1).fill(0);
+        chart.data.datasets[1].data = Array(n+1).fill(0);
+      }else{
+        chart.data.datasets[0].data = bins.slice();
+        chart.data.datasets[1].data = theoCounts();
+      }
+      chart.update('none');
+    }
+
+    // ====== 控制流程 ======
+    function resetAll(){
+      paused = false;
+      pauseBtn.textContent = '暫停';
+      stopAutoEmitter();
+      autoOn = false;
+      autoBtn.textContent = '自動開始';
+      balls = [];
+      prepareBoard(n);
+      resetCounts();
+      renderBalls();
+    }
+
+    // ====== 初始化 ======
+    function init(){
+      nVal.textContent = n;
+      pVal.textContent = p.toFixed(2);
+      batchVal.textContent = batchSize;
+      emitVal.textContent = emitPerSec;
+      fallVal.textContent = fallMsPerLevel;
+      prepareBoard(n);
+      resetCounts();
+      requestAnimationFrame(loop);
+    }
+    function start(){ requestAnimationFrame(loop); }
+    window.addEventListener('resize', ()=>{ /* 版面固定寬度，無需動 */ });
+    init();
+  </script>
+</body>
+</html>
